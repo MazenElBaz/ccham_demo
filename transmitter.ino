@@ -18,7 +18,7 @@
 // visit io.adafruit.com if you need to create an account,
 // or if you need your Adafruit IO key.
 #define IO_USERNAME "melbaz1"
-#define IO_KEY "aio_ddiz88gxucz5ihDNynIGq5QULFGs"
+
 
 /******************************* WiFi Config ********************************/
 //#define WIFI_SSID "SHAW-B231D0"
@@ -49,7 +49,6 @@ AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS);
 #include "base64.hpp"
 #include "CloudIoTCoreDevice.h"
 #include "ciotc_config.h" // Update this file with your configuration
-
 #define CLOUD_IOT_CORE_HTTP_HOST "cloudiotdevice.googleapis.com"
 
 WiFiUDP ntpUDP;
@@ -238,7 +237,7 @@ void loop()
   if(baseline_index == 3){
     change = (abs(accelY-baseline)/baseline)*100;
 
-    if(change > 2.5){
+    if(change > 1){
       tap_on = true;
       tap_off = false;
       ON_count++;
