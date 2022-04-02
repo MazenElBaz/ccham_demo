@@ -1,0 +1,12 @@
+1) Generate a key pair (ES256 format):
+    openssl ecparam -genkey -name prime256v1 -noout -out ec_private.pem
+    openssl ec -in ec_private.pem -pubout -out ec_public.pem
+
+2) Create a device and upload that public key (ec_public.pem) :
+    https://cloud.google.com/iot/docs/how-tos/devices#creating_or_editing_a_device
+
+3) Update ssid and password in test.ino (check your router)
+
+4) Update device_id in ciotc_config.h (you get that from Cloud IoT)
+
+5) Update private_key_str in ciotc_config.h (you get that from step 1)
