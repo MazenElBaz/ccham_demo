@@ -14,27 +14,12 @@
 //
 // All text above must be included in any redistribution.
 
-/************************ Adafruit IO Config *******************************/
-// visit io.adafruit.com if you need to create an account,
-// or if you need your Adafruit IO key.
-#define IO_USERNAME "melbaz1"
-
-
-/******************************* WiFi Config ********************************/
-//#define WIFI_SSID "SHAW-B231D0"
-//#define WIFI_PASS "251167082106"
-
 #define WIFI_SSID "SM-G973W3730"
 #define WIFI_PASS "7802983369"
 
-
-// comment out the following two lines if you are using fona or ethernet
-#include "AdafruitIO_WiFi.h"
-AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS);
-
 /************************** Configuration ***********************************/
 // time between sending data to adafruit io, in seconds.
-#define IO_DELAY 3
+#define IO_DELAY 1
 /************************ Example Starts Here *******************************/
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -60,7 +45,13 @@ String apiPath;
 
 float tempC, accelX, accelY, accelZ, accelAVG, baseline, change;
 
-float baseline_readings[3] = {};
+#define num_samples 5
+
+#define threshold_change 50
+
+float baseline_readings[num_samples] = {};
+
+int baseline_index = 0;
 
 bool tap_off = true;
 
@@ -72,7 +63,10 @@ int ON_duration = 0;
 
 bool tap_on = false;
 
-int baseline_index = 0;
+int sample_idx = 0;
+
+
+float recent_samples[num_samples] = {};
 
 // Create the ADT7410 temperature sensor object
 Adafruit_ADT7410 tempsensor = Adafruit_ADT7410();
@@ -80,33 +74,15 @@ Adafruit_ADT7410 tempsensor = Adafruit_ADT7410();
 // Create the ADXL343 accelerometer sensor object
 Adafruit_ADXL343 accel = Adafruit_ADXL343(12345);
 
-// set up the 'temperature' feed
-AdafruitIO_Feed *huzzah_temperature = io.feed("temperature");
-
-// set up the 'accelX' feed
-AdafruitIO_Feed *huzzah_accel_x = io.feed("accelX");
-
-// set up the 'accelY' feed
-AdafruitIO_Feed *huzzah_accel_y = io.feed("accelY");
-
-// set up the 'accelZ' feed
-AdafruitIO_Feed *huzzah_accel_z= io.feed("accelZ");
-
-
-AdafruitIO_Feed *huzzah_accel_avg = io.feed("accelAVG");
-
-
-AdafruitIO_Feed *water_on_duration = io.feed("water_on_duration");
-
-
-AdafruitIO_Feed *tap_state = io.feed("tap_state");
-
-
-AdafruitIO_Feed *predicted_activity = io.feed("predicted_activity");
-
 
 void setup()
 {
+
+  //Filling samples
+  for (int i=0; i<num_samples; i++) {
+    recent_samples[i] = 0;
+  }
+  
   // start the serial connection
   Serial.begin(115200);
 
@@ -125,7 +101,7 @@ void setup()
   }
 
   /* Set the range to whatever is appropriate for your project */
-  accel.setRange(ADXL343_RANGE_2_G);
+  accel.setRange(ADXL343_RANGE_8_G);
 
   /* Initialise the ADT7410 */
   if (!tempsensor.begin())
@@ -138,20 +114,33 @@ void setup()
   // sensor takes 250 ms to get first readings
   delay(250);
 
-  // connect to io.adafruit.com
-  Serial.print("Connecting to Adafruit IO");
-  io.connect();
+  ESP.wdtDisable();
 
-  // wait for a connection
-  while (io.status() < AIO_CONNECTED)
-  {
-    Serial.print(".");
+  // We start by connecting to a WiFi network
+
+  Serial.println();
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    Serial.print(".");
   }
 
-  // we are connected
-  Serial.println();
-  Serial.println(io.statusText());
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  timeClient.begin();
+  device = new CloudIoTCoreDevice(
+    project_id, location, registry_id, device_id,
+    private_key_str);
+  apiPath = device->getSendTelemetryPath();
+  timeClient.update();
+
 }
 
 
@@ -165,7 +154,7 @@ void sendToCloud(unsigned char string[]) {
   String jwt = device->createJWT(timeNow, jwt_exp_secs);
   wdt_enable(0);
   wdt_reset();
-  unsigned char base64[21]; // 20 bytes for output + 1 for null terminator
+  unsigned char base64[200];
   // encode_base64() places a null terminator automatically, because the output is a string
   
   int base64_length = encode_base64(string, strlen((char *) string), base64);
@@ -205,14 +194,20 @@ void sendToCloud(unsigned char string[]) {
 
 }
 
+float get_avg(float* recent_samples, int len) {
+  float avg = 0.0;
+  for (int i=0; i<len; i++) {
+    avg += recent_samples[i];
+  }
+  avg /= len;
+  return avg;
+}
+
 
 void loop()
 {
-  // io.run(); is required for all sketches.
-  // it should always be present at the top of your loop
-  // function. it keeps the client connected to
-  // io.adafruit.com, and processes any incoming data.
-  io.run();
+  timeClient.update();
+
 
    /* Get a new accel. sensor event */
   sensors_event_t event;
@@ -222,51 +217,57 @@ void loop()
   accelY = event.acceleration.y;
   //accelZ = event.acceleration.z;
   //accelAVG = (accelX + accelY + accelZ)/3;
-
-
   if(tap_off == true && startup == true){
     baseline_readings[baseline_index] = accelY;
     baseline_index++;
 
-    if(baseline_index == 3){
-      baseline = (baseline_readings[0]+baseline_readings[1]+baseline_readings[2])/3;
+    if(baseline_index == num_samples){
+      baseline = get_avg(baseline_readings, num_samples);
       startup = false;
     }
   }
 
-  if(baseline_index == 3){
-    change = (abs(accelY-baseline)/baseline)*100;
 
-    if(change > 1){
+  if(baseline_index == num_samples){
+    change = abs(abs(accelY-baseline)/baseline)*100;
+
+ 
+    recent_samples[sample_idx] = change;
+    sample_idx = (sample_idx + 1) % num_samples;
+    float recent_avg = get_avg(recent_samples, num_samples);
+       Serial.print("recent_avg: ");
+    Serial.println(recent_avg);
+    
+    if(recent_avg > threshold_change){
+      Serial.println("TAP IS ON");
       tap_on = true;
       tap_off = false;
       ON_count++;
-      Serial.println("Tap is ON! Sending tap state to Adafruit IO...");
-      tap_state->save(1);
     }
     else{
+      Serial.println("TAP IS OFF");
       tap_on = false;
       tap_off = true;
 
-      Serial.println("Tap is OFF! Sending tap state to Adafruit IO...");
-      tap_state->save(0);
-      
       if(ON_count > 0){
-        ON_duration = ON_count * IO_DELAY;
-        Serial.println("Sending duration of tap turned ON to Adafruit IO...");
-        water_on_duration->save(ON_duration);
+          Serial.println(ON_count);
+        ON_duration = ON_count * 0.25;
         ON_count = 0;
 
-        Serial.println("Sending predicted activity to Adafruit IO...");
         if(ON_duration >= 3 && ON_duration < 15){
-          predicted_activity->save("Filling up water bottle");
+          Serial.println("Filling up water bottle");
+          sendToCloud((unsigned char *) "Filling up water bottle");
         }
         else if(ON_duration >= 15 && ON_duration < 25){
-          predicted_activity->save("Washing hands or filling up a cooking pot");
+          Serial.println("Washing hands or filling up a cooking pot");
+          sendToCloud((unsigned char *)"Washing hands or filling up a cooking pot");
         }
         else if(ON_duration >= 25){
-          predicted_activity->save("Washing dishes");
+          Serial.println("Washing dishes");
+          sendToCloud((unsigned char *)"Washing dishes");
         }
+
+
       }
     }
   }
@@ -274,25 +275,16 @@ void loop()
 
   /* Display the results (acceleration is measured in m/s^2) */
 //  Serial.print("X: "); Serial.print(accelX); Serial.print("  ");
-//  Serial.print("Y: "); Serial.print(accelY); Serial.print("  ");
+  Serial.print("Y: "); Serial.print(accelY); Serial.print("  ");
 //  Serial.print("Z: "); Serial.print(accelZ); Serial.print("  ");Serial.println("m/s^2 ");
   
   // Read and print out the temperature
 //  tempC = tempsensor.readTempC();
 //  Serial.print("Temperature: "); Serial.print(tempC); Serial.println("C");
 
-  //Serial.println("Sending to Adafruit IO...");
-  //huzzah_temperature->save(tempC, 0, 0, 0, 2);
-  //huzzah_accel_x->save(accelX);
-  //huzzah_accel_y->save(accelY);
-  //huzzah_accel_z->save(accelZ);
-  //huzzah_accel_avg->save(accelAVG);
-  //Serial.println("Data sent!");
-
-  //Serial.print("Waiting ");Serial.print(IO_DELAY);Serial.println(" seconds...");
-  // wait IO_DELAY seconds between sends
   for (int i = 0; i < IO_DELAY; i++)
   {
-    delay(1000);
+    delay(250);
+    wdt_reset();
   }
 }
